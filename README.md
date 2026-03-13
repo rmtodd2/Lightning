@@ -1,19 +1,22 @@
 # Lightning
 
-Lightning is a small Tkinter desktop utility for extracting bright frames from video files.
+Lightning is a small Tkinter desktop utility for extracting likely lightning frames from slow-motion video files.
 
-The application scans each video in an input folder, tracks the darkest frame seen so far, and saves frames whose brightness is greater than or equal to:
+The application scans each video in an input folder and looks for sudden flash events between consecutive frames. Instead of using only absolute brightness, it scores each frame using:
 
-`darkest_frame_brightness * threshold`
+- rapid increase in average brightness
+- rapid increase in peak brightness
+- ratio of pixels that brighten sharply from the previous frame
+- ratio of very bright pixels
 
-Saved frames are written as `.jpg` files to the selected output folder, and the filename includes the source video name, frame number, and brightness metadata.
+Nearby detections are grouped into a single event, and the strongest frame from each event is saved as a `.jpg` in the selected output folder.
 
 ## Features
 
 - Desktop GUI built with Tkinter
 - Batch processes videos from a selected folder
 - Supports `.MOV` and `.mp4` input files
-- Adjustable brightness threshold
+- Adjustable lightning sensitivity threshold
 - Progress indicators for videos and frames
 - Cancel button to stop processing
 
@@ -43,10 +46,10 @@ Then:
 
 1. Choose the input folder containing video files.
 2. Choose the output folder for extracted frames.
-3. Enter a detection threshold.
+3. Enter a lightning sensitivity threshold.
 4. Click `Start`.
 
-Higher threshold values save fewer frames because a frame must be much brighter than the darkest frame observed so far to be written out.
+Lower threshold values catch more flashes. `6.0` is a reasonable starting point for tuning.
 
 ## Project Structure
 
@@ -57,5 +60,6 @@ Higher threshold values save fewer frames because a frame must be much brighter 
 ## Notes
 
 - The UI was generated with PAGE and uses Tkinter widgets.
-- The current file matching is case-sensitive and only processes files ending in `.MOV` or `.mp4`.
+- Supported video extensions are `.mov`, `.mp4`, `.avi`, and `.m4v`.
 - Frames are saved directly into the selected output folder; they are not grouped into per-video subfolders.
+- Output filenames include the frame number and detection score metadata for quick review.

@@ -90,7 +90,7 @@ class Toplevel1:
         self.Ent_thres.configure(selectbackground="#c4c4c4")
         self.Ent_thres.configure(selectforeground="black")
         self.Ent_thres_tooltip = \
-        ToolTip(self.Ent_thres, '''The higher the number the fewer frames will be saved.''')
+        ToolTip(self.Ent_thres, '''Sensitivity threshold for lightning detection. Lower values catch more flashes; 6.0 is a good starting point.''')
 
         self.Txt_input = tk.Text(self.top)
         self.Txt_input.place(relx=0.033, rely=0.145, relheight=0.06
@@ -165,7 +165,7 @@ class Toplevel1:
         self.Lbl_thres.configure(foreground="#000000")
         self.Lbl_thres.configure(highlightbackground="#d9d9d9")
         self.Lbl_thres.configure(highlightcolor="black")
-        self.Lbl_thres.configure(text='''Set your detection threshold.''')
+        self.Lbl_thres.configure(text='''Set your lightning threshold.''')
         self.Btn_start = tk.Button(self.top)
         self.Btn_start.place(relx=0.033, rely=0.558, height=24, width=67)
         self.Btn_start.configure(activebackground="beige")

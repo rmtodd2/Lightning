@@ -5,28 +5,43 @@
 #  in conjunction with Tcl version 8.6
 #    Aug 03, 2023 02:30:21 PM EDT  platform: Windows NT
 
+import os
 import sys
+import threading
 import tkinter as tk
 import tkinter.ttk as ttk
+from dataclasses import dataclass
+from tkinter import filedialog, messagebox
+
 import cv2
 import numpy as np
-import os
-import threading
-from tkinter.constants import *
-from tkinter import filedialog
-global vid_current
-vid_current = -2
 
 import Lightning1
 
-_debug = True
+
+SUPPORTED_EXTENSIONS = {".mov", ".mp4", ".avi", ".m4v"}
+DEFAULT_THRESHOLD = 6.0
+BRIGHT_PIXEL_VALUE = 240
+EVENT_GAP_FRAMES = 2
+
+running = False
+
+
+@dataclass
+class FrameMetrics:
+    mean_brightness: float
+    peak_brightness: float
+    diff_ratio: float
+    bright_ratio: float
+    score: float
+
 
 def main(*args):
-    '''Main entry point for the application.'''
+    """Main entry point for the application."""
     global root
     root = tk.Tk()
-    root.protocol( 'WM_DELETE_WINDOW' , root.destroy)
-    # Creates a toplevel widget.
+    root.protocol("WM_DELETE_WINDOW", root.destroy)
+
     global _top1, _w1
     _top1 = root
     _w1 = Lightning1.Toplevel1(_top1)
@@ -34,153 +49,298 @@ def main(*args):
     _w1.Btn_output.configure(command=open_folder_o)
     _w1.Btn_start.configure(command=start_button)
     _w1.Btn_cancel.configure(command=cancel)
-    _w1.Lbl_vid_num.configure(text='''0''')
-    _w1.Lbl_video_tot.configure(text='''0''')
-    _w1.Lbl_frame_tot.configure(text='''0''')
-    _w1.Lbl_frm_num.configure(text='''0''')
-    _w1.Lbl_pro.configure(text=''' ''')
-    _w1.top.resizable(False,  False)
-    
+    _w1.Lbl_vid_num.configure(text="0")
+    _w1.Lbl_video_tot.configure(text="0")
+    _w1.Lbl_frame_tot.configure(text="0")
+    _w1.Lbl_frm_num.configure(text="0")
+    _w1.Lbl_pro.configure(text="Idle")
+    _w1.Ent_thres.insert(0, str(DEFAULT_THRESHOLD))
+    _w1.top.resizable(False, False)
+
     root.mainloop()
-    
 
 
 def cancel():
     global running
     running = False
-    
+    _w1.Lbl_pro.configure(text="Cancelling...")
+
 
 def quit(*args):
-    print('Lightning1_support.quit')
+    print("Lightning1_support.quit")
     for arg in args:
-        print ('another arg:', arg)
+        print("another arg:", arg)
     sys.stdout.flush()
     sys.exit()
 
+
 def open_folder_i():
-    folder_path = filedialog.askdirectory() 
-    
+    folder_path = filedialog.askdirectory()
     if folder_path:
+        _w1.Txt_input.delete("1.0", tk.END)
         _w1.Txt_input.insert(tk.END, folder_path)
-    else:
-        print("No folder selected")
+
 
 def open_folder_o():
-    folder_path = filedialog.askdirectory() 
-    
+    folder_path = filedialog.askdirectory()
     if folder_path:
+        _w1.Txt_Output.delete("1.0", tk.END)
         _w1.Txt_Output.insert(tk.END, folder_path)
-    else:
-        print("No folder selected")
+
 
 def start_button():
-    st = threading.Thread(target=start_processing)
-    st.start()
-def start_processing():
-    global running
-    running = True
-    def update_labels(vid_current, frame_count, frame_total,vid_total):
-        _w1.Lbl_vid_num.configure(text=vid_current)
-        _w1.Lbl_frm_num.configure(text=frame_count)
-        _w1.Lbl_frame_tot.configure(text=frame_total)
-        _w1.Lbl_video_tot.configure(text=vid_total)
-        _top1.update_idletasks()
-    
-    
-    def calculate_brightness(frame):
-        # Convert the frame to grayscale for brightness calculation
-        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        return np.mean(gray_frame)
-    
-    
+    if running:
+        return
+    validated = validate_inputs()
+    if validated is None:
+        return
+    worker = threading.Thread(target=start_processing, args=(validated,), daemon=True)
+    worker.start()
 
-    def save_brighter_frames(input_path, output_path,vid_current, threshold, input_folder_path):
-        cap = cv2.VideoCapture(input_path)
-        _w1.Lbl_pro.configure(text="Processing")
-        num_files = 0
-        for root, dirs, files in os.walk(input_folder_path):
-            num_files += len(files)
-        vid_total = (num_files)
-        vid_current += 1
-        frame_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        # Read the first frame to initialize the variables
-        ret, prev_frame = cap.read()
-        if not ret:
-            return
 
-        darkest_frame_brightness = calculate_brightness(prev_frame)
-        
-        #threshold = darkest_frame_brightness / darkest_frame_brightness ** 1.7 * 35
+def supported_video_files(folder_path):
+    return sorted(
+        filename
+        for filename in os.listdir(folder_path)
+        if os.path.splitext(filename)[1].lower() in SUPPORTED_EXTENSIONS
+    )
 
-        frame_count = 0
-        video_name = os.path.splitext(os.path.basename(input_path))[0]  # Move video_name declaration here
-        while True:
-            
-            ret, frame = cap.read()
-            if not ret:
-                break
 
-            if not running:
-                break
-                
+def validate_inputs():
+    input_folder_path = _w1.Txt_input.get("1.0", tk.END).strip()
+    output_folder_path = _w1.Txt_Output.get("1.0", tk.END).strip()
+    threshold_text = _w1.Ent_thres.get().strip()
 
-            current_brightness = calculate_brightness(frame)
+    if not input_folder_path or not os.path.isdir(input_folder_path):
+        messagebox.showerror("Lightning", "Choose a valid input folder.")
+        return None
 
-            if darkest_frame_brightness == 0:
-                darkest_frame_brightness = .1
-            else:
-                if current_brightness < darkest_frame_brightness:
-                    darkest_frame_brightness = current_brightness
+    if not output_folder_path or not os.path.isdir(output_folder_path):
+        messagebox.showerror("Lightning", "Choose a valid output folder.")
+        return None
 
-            thres_percent = round(current_brightness / darkest_frame_brightness, 2)
-            df = round(darkest_frame_brightness, 5)
-            cf = round(current_brightness, 5)
-            th = round(threshold, 2)
-            
-            if current_brightness >= darkest_frame_brightness * threshold:
-                output_frame_path = os.path.join(output_path, f"{video_name}_frame_{frame_count}_{thres_percent}_{df}_{cf}_{th}.jpg")
-                cv2.imwrite(output_frame_path, frame)
+    try:
+        threshold = float(threshold_text)
+    except ValueError:
+        messagebox.showerror("Lightning", "Threshold must be a number.")
+        return None
 
-            
-            
-            
-            frame_count += 1
-            frame_pro = frame_count / frame_total * 100
-            vid_pro = vid_current / vid_total * 100
-            update_labels(vid_current, frame_count, frame_total,vid_total)
-            _w1.TPro_frame.configure(value=frame_pro)
-            _w1.TPro_vid.configure(value=vid_pro)
-            
+    if threshold <= 0:
+        messagebox.showerror("Lightning", "Threshold must be greater than 0.")
+        return None
+
+    video_files = supported_video_files(input_folder_path)
+    if not video_files:
+        messagebox.showerror(
+            "Lightning",
+            "No supported video files were found in the input folder.",
+        )
+        return None
+
+    return input_folder_path, output_folder_path, threshold, video_files
+
+
+def preprocess_frame(frame):
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    small_frame = cv2.resize(gray_frame, (0, 0), fx=0.25, fy=0.25)
+    return cv2.GaussianBlur(small_frame, (5, 5), 0)
+
+
+def calculate_frame_metrics(processed_frame, previous_frame, baseline_noise):
+    mean_brightness = float(np.mean(processed_frame))
+    peak_brightness = float(np.percentile(processed_frame, 99.7))
+
+    positive_diff = cv2.subtract(processed_frame, previous_frame)
+    noise_floor = max(12.0, baseline_noise * 2.5)
+    diff_ratio = float(np.mean(positive_diff >= noise_floor))
+    bright_ratio = float(np.mean(processed_frame >= BRIGHT_PIXEL_VALUE))
+
+    return mean_brightness, peak_brightness, diff_ratio, bright_ratio
+
+
+def compute_lightning_score(current_metrics, previous_metrics, baseline_delta, baseline_peak_delta):
+    mean_delta = max(0.0, current_metrics[0] - previous_metrics[0])
+    peak_delta = max(0.0, current_metrics[1] - previous_metrics[1])
+
+    mean_component = mean_delta / max(1.5, baseline_delta)
+    peak_component = peak_delta / max(3.0, baseline_peak_delta)
+
+    score = (
+        mean_component * 2.0
+        + peak_component * 1.4
+        + current_metrics[2] * 22.0
+        + current_metrics[3] * 18.0
+    )
+
+    return FrameMetrics(
+        mean_brightness=current_metrics[0],
+        peak_brightness=current_metrics[1],
+        diff_ratio=current_metrics[2],
+        bright_ratio=current_metrics[3],
+        score=score,
+    )
+
+
+def is_lightning_candidate(frame_metrics, previous_metrics, threshold):
+    mean_delta = frame_metrics.mean_brightness - previous_metrics[0]
+    peak_delta = frame_metrics.peak_brightness - previous_metrics[1]
+
+    return (
+        frame_metrics.score >= threshold
+        and mean_delta >= 3.0
+        and peak_delta >= 8.0
+        and frame_metrics.diff_ratio >= 0.01
+    )
+
+
+def save_detected_frame(frame, output_path, video_name, frame_number, frame_metrics, threshold):
+    output_frame_path = os.path.join(
+        output_path,
+        (
+            f"{video_name}_frame_{frame_number}"
+            f"_score_{frame_metrics.score:.2f}"
+            f"_mean_{frame_metrics.mean_brightness:.1f}"
+            f"_peak_{frame_metrics.peak_brightness:.1f}"
+            f"_diff_{frame_metrics.diff_ratio:.3f}"
+            f"_thr_{threshold:.2f}.jpg"
+        ),
+    )
+    cv2.imwrite(output_frame_path, frame)
+
+
+def process_video(input_path, output_path, threshold, video_index, video_total):
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        return 0
+
+    frame_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+    _w1.Lbl_pro.configure(text="Processing")
+
+    ret, previous_frame = cap.read()
+    if not ret:
         cap.release()
-        if running:
-            vid_current += 1
-            frame_count += 1
-            frame_pro = frame_count / frame_total * 100
-            vid_pro = vid_current / vid_total * 100
-            _w1.TPro_frame.configure(value=frame_pro)
-            _w1.TPro_vid.configure(value=vid_pro)
-            _w1.Lbl_pro.configure(text="Done")
-            update_labels(vid_current, frame_count, frame_total,vid_total)
-    
-    
+        return 0
 
-    input_folder_path = _w1.Txt_input.get(1.0, tk.END).strip()
-    output_folder_path = _w1.Txt_Output.get(1.0, tk.END).strip()
-    threshold = float(_w1.Ent_thres.get())
-    vid_current = -2
+    previous_processed = preprocess_frame(previous_frame)
+    previous_metrics = (
+        float(np.mean(previous_processed)),
+        float(np.percentile(previous_processed, 99.7)),
+    )
+    baseline_noise = 5.0
+    baseline_delta = 3.0
+    baseline_peak_delta = 6.0
+    frame_count = 0
+    saved_count = 0
+    event_candidate = None
+    event_gap = 0
+    video_name = os.path.splitext(os.path.basename(input_path))[0]
 
-    
-    # Process every video in the input folder
-    for filename in os.listdir(input_folder_path):
-        vid_current += 1
-        if filename.endswith(".MOV") or filename.endswith(".mp4"):
-            input_video_path = os.path.join(input_folder_path, filename)
-            save_brighter_frames(input_video_path, output_folder_path, vid_current, threshold, input_folder_path)
-    
+    while running:
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-if __name__ == '__main__':
+        frame_count += 1
+        processed_frame = preprocess_frame(frame)
+        current_metrics = calculate_frame_metrics(
+            processed_frame,
+            previous_processed,
+            baseline_noise,
+        )
+        frame_metrics = compute_lightning_score(
+            current_metrics,
+            previous_metrics,
+            baseline_delta,
+            baseline_peak_delta,
+        )
+        detected = is_lightning_candidate(frame_metrics, previous_metrics, threshold)
+
+        if detected:
+            if event_candidate is None or frame_metrics.score > event_candidate["metrics"].score:
+                event_candidate = {
+                    "frame": frame.copy(),
+                    "frame_number": frame_count,
+                    "metrics": frame_metrics,
+                }
+            event_gap = 0
+        elif event_candidate is not None:
+            event_gap += 1
+            if event_gap > EVENT_GAP_FRAMES:
+                save_detected_frame(
+                    event_candidate["frame"],
+                    output_path,
+                    video_name,
+                    event_candidate["frame_number"],
+                    event_candidate["metrics"],
+                    threshold,
+                )
+                saved_count += 1
+                event_candidate = None
+                event_gap = 0
+
+        if not detected:
+            mean_delta = abs(current_metrics[0] - previous_metrics[0])
+            peak_delta = abs(current_metrics[1] - previous_metrics[1])
+            baseline_delta = baseline_delta * 0.92 + max(0.5, mean_delta) * 0.08
+            baseline_peak_delta = baseline_peak_delta * 0.92 + max(1.0, peak_delta) * 0.08
+            baseline_noise = baseline_noise * 0.9 + float(np.std(processed_frame)) * 0.1
+
+        previous_processed = processed_frame
+        previous_metrics = (current_metrics[0], current_metrics[1])
+
+        frame_progress = frame_count / frame_total * 100
+        video_progress = video_index / video_total * 100
+        _w1.Lbl_vid_num.configure(text=str(video_index))
+        _w1.Lbl_video_tot.configure(text=str(video_total))
+        _w1.Lbl_frm_num.configure(text=str(frame_count))
+        _w1.Lbl_frame_tot.configure(text=str(frame_total))
+        _w1.TPro_frame.configure(value=frame_progress)
+        _w1.TPro_vid.configure(value=video_progress)
+        _top1.update_idletasks()
+
+    if event_candidate is not None and running:
+        save_detected_frame(
+            event_candidate["frame"],
+            output_path,
+            video_name,
+            event_candidate["frame_number"],
+            event_candidate["metrics"],
+            threshold,
+        )
+        saved_count += 1
+
+    cap.release()
+    _w1.TPro_frame.configure(value=100)
+    return saved_count
+
+
+def start_processing(validated):
+    global running
+    input_folder_path, output_folder_path, threshold, video_files = validated
+    running = True
+    total_saved = 0
+    video_total = len(video_files)
+
+    for video_index, filename in enumerate(video_files, start=1):
+        if not running:
+            break
+        input_video_path = os.path.join(input_folder_path, filename)
+        total_saved += process_video(
+            input_video_path,
+            output_folder_path,
+            threshold,
+            video_index,
+            video_total,
+        )
+
+    if running:
+        _w1.Lbl_pro.configure(text=f"Done - saved {total_saved} events")
+        _w1.TPro_vid.configure(value=100)
+    else:
+        _w1.Lbl_pro.configure(text=f"Cancelled - saved {total_saved} events")
+
+    running = False
+
+
+if __name__ == "__main__":
     Lightning1.start_up()
-
-
-
-
