@@ -1,6 +1,6 @@
 # Lightning
 
-Lightning is a small Tkinter desktop utility for extracting likely lightning frames from slow-motion video files.
+Lightning is a small PySide6 desktop utility for extracting likely lightning frames from slow-motion video files.
 
 The application scans each video in an input folder and looks for sudden flash events between consecutive frames. Instead of using only absolute brightness, it scores each frame using:
 
@@ -13,9 +13,9 @@ Nearby detections are grouped into a single event, and the strongest frame from 
 
 ## Features
 
-- Desktop GUI built with Tkinter
+- Desktop GUI built with PySide6
 - Batch processes videos from a selected folder
-- Supports `.MOV` and `.mp4` input files
+- Supports `.MOV`, `.mov`, `.mp4`, `.avi`, and `.m4v` input files
 - Adjustable lightning sensitivity threshold
 - Progress indicators for videos and frames
 - Cancel button to stop processing
@@ -23,7 +23,6 @@ Nearby detections are grouped into a single event, and the strongest frame from 
 ## Requirements
 
 - Python 3.9+
-- Tkinter support in your Python installation
 - Dependencies listed in `requirements.txt`
 
 ## Installation
@@ -53,13 +52,20 @@ Lower threshold values catch more flashes. `6.0` is a reasonable starting point 
 
 ## Project Structure
 
-- `Lightning1.py`: PAGE-generated Tkinter GUI layout and startup entry point
+- `Lightning1.py`: PySide6 GUI layout and startup entry point
 - `Lightning1_support.py`: application logic for folder selection, processing, and frame extraction
 - `Lightning.ico`: application icon asset
 
 ## Notes
 
-- The UI was generated with PAGE and uses Tkinter widgets.
-- Supported video extensions are `.mov`, `.mp4`, `.avi`, and `.m4v`.
+- Supported video extensions are matched case-insensitively, so `.MOV` files are included.
+- `.MOV` decoding depends on the codecs available through OpenCV/FFmpeg on your platform.
 - Frames are saved directly into the selected output folder; they are not grouped into per-video subfolders.
 - Output filenames include the frame number and detection score metadata for quick review.
+
+## Suggested Improvements
+
+- Add a dry-run preview mode that lists detected events without saving frames.
+- Add optional per-video output subfolders to keep large batches easier to review.
+- Save a CSV detection report with video name, frame number, score, and brightness metrics.
+- Add a recursive input-folder option for cameras that create dated subfolders.
