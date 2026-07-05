@@ -10,6 +10,7 @@ The application scans each video in an input folder and looks for sudden flash e
 - ratio of very bright pixels
 - strongest localized flash activity across a 6x8 region grid
 - temporal contrast against the recent frame-to-frame baseline
+- visible thin bolt structure inside a single frame
 
 Nearby detections are grouped into a single event, and the strongest frame from each event is saved as a `.jpg` in the selected output folder.
 
@@ -21,6 +22,7 @@ Nearby detections are grouped into a single event, and the strongest frame from 
 - Adjustable lightning sensitivity threshold
 - Region-based scoring for localized flashes
 - Temporal spike filtering to reduce false positives from gradual exposure changes
+- Static bolt-structure detection for visible lightning channels
 - Progress indicators for videos and frames
 - Cancel button to stop processing
 
@@ -52,7 +54,7 @@ Then:
 3. Enter a lightning sensitivity threshold.
 4. Click `Start`.
 
-Lower threshold values catch more flashes. `6.0` is a reasonable starting point for tuning.
+Lower threshold values catch more temporal flash events. `6.0` is a reasonable starting point for tuning. Visible bolt detection also has a built-in minimum shape score so cloud texture and bright gaps are less likely to trigger even when the threshold is very low.
 
 ## Project Structure
 

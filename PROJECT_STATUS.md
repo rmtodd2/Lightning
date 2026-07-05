@@ -8,13 +8,13 @@ No user action required right now.
 
 ## Current Goal
 
-Improve Lightning's video detector beyond whole-frame brightness checks while avoiding crop or mask workflows.
+Fix missed detections on real storm footage where visible bolts appear without a large whole-frame brightness spike.
 
 ---
 
 ## Current State
 
-Lightning is a PySide6 desktop app that scans supported video files in a selected folder and saves likely lightning frames as `.jpg` files. The detector now combines whole-frame brightness deltas, localized 6x8 region activity, and temporal contrast against the frame-to-frame baseline.
+Lightning is a PySide6 desktop app that scans supported video files in a selected folder and saves likely lightning frames as `.jpg` files. The detector now combines whole-frame brightness deltas, localized 6x8 region activity, temporal contrast, and visible bolt-structure scoring.
 
 ---
 
@@ -24,6 +24,7 @@ Lightning is a PySide6 desktop app that scans supported video files in a selecte
 - Confirmed supported video matching includes uppercase `.MOV` through case-insensitive extension checks.
 - Added region-based flash scoring.
 - Added temporal spike filtering to reduce gradual exposure-change false positives.
+- Added static bolt-structure detection after real screenshot examples showed visible bolts with saturated peak brightness and weak temporal gates.
 - Updated `README.md` and `requirements.txt`.
 
 ---
@@ -32,6 +33,7 @@ Lightning is a PySide6 desktop app that scans supported video files in a selecte
 
 - Do not add sky cropping or masking at this stage.
 - Keep the existing single threshold UI so the app stays simple.
+- Keep a built-in minimum static-bolt score so very low user thresholds do not turn bright cloud texture into detections.
 - Preserve batch-folder processing and direct output into the selected output folder.
 
 ---
@@ -39,7 +41,8 @@ Lightning is a PySide6 desktop app that scans supported video files in a selecte
 ## Known Issues / Risks
 
 - `.MOV` decoding still depends on the codecs available to OpenCV/FFmpeg on the user's machine.
-- Threshold tuning may need real camera samples because region scoring changes score distribution.
+- Threshold tuning may need real video samples because region and bolt scoring change score distribution.
+- Static bolt detection adds per-frame image analysis work and may be slower on long/high-resolution videos.
 - The app does not yet create a CSV report, so reviewing large batches depends on output filenames.
 
 ---
@@ -49,6 +52,7 @@ Lightning is a PySide6 desktop app that scans supported video files in a selecte
 - Add optional CSV detection reporting with video name, frame number, score, region activity, and temporal contrast.
 - Add optional per-video output subfolders.
 - Add a small automated test module for supported extension filtering and synthetic flash detection.
+- Add a lightweight debug report option that records rejected-frame max scores for threshold tuning.
 - Consider showing the active detector settings in an About or details dialog.
 
 ---

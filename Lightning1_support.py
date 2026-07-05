@@ -21,6 +21,9 @@ EVENT_GAP_FRAMES = 2
 REGION_ROWS = 6
 REGION_COLS = 8
 MIN_REGION_DIFF_RATIO = 0.025
+BOLT_SCORE_NORMALIZER = 500.0
+BOLT_TILE_SCORE_NORMALIZER = 80.0
+BOLT_MIN_SCORE = 30.0
 
 running = False
 
@@ -34,6 +37,9 @@ class FrameMetrics:
     region_diff_ratio: float
     active_region_ratio: float
     temporal_contrast: float
+    bolt_score: float
+    bolt_component_count: int
+    bolt_pixel_ratio: float
     score: float
 
 
@@ -142,6 +148,80 @@ def preprocess_frame(frame):
     return cv2.GaussianBlur(small_frame, (5, 5), 0)
 
 
+def calculate_bolt_features(frame):
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    height, width = gray_frame.shape
+    scale = min(1.0, 960 / width)
+
+    if scale < 1.0:
+        gray_frame = cv2.resize(
+            gray_frame,
+            (int(width * scale), int(height * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    local_average = cv2.GaussianBlur(gray_frame, (31, 31), 0)
+    local_contrast = cv2.subtract(gray_frame, local_average)
+    bolt_mask = np.where((gray_frame >= 185) & (local_contrast >= 22), 255, 0).astype(
+        np.uint8
+    )
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 3))
+    bolt_mask = cv2.morphologyEx(bolt_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    component_count, _, stats, _ = cv2.connectedComponentsWithStats(bolt_mask, 8)
+    raw_score = 0.0
+    matching_components = 0
+
+    for component_index in range(1, component_count):
+        _, _, component_width, component_height, area = stats[component_index]
+
+        if area < 8 or area > 8000:
+            continue
+
+        aspect_ratio = component_height / max(1, component_width)
+        fill_ratio = area / max(1, component_width * component_height)
+
+        if component_height >= 18 and aspect_ratio >= 1.2 and fill_ratio <= 0.45:
+            matching_components += 1
+            raw_score += area * (component_height / 20) * min(aspect_ratio, 8) * (
+                1 - fill_ratio
+            )
+
+    tile_score = 0.0
+    tile_matches = 0
+
+    for y_start in range(0, bolt_mask.shape[0], 40):
+        for x_start in range(0, bolt_mask.shape[1], 40):
+            tile = bolt_mask[y_start : y_start + 80, x_start : x_start + 80]
+            if tile.size == 0:
+                continue
+
+            y_pixels, x_pixels = np.where(tile > 0)
+            pixel_count = len(x_pixels)
+            if pixel_count < 8:
+                continue
+
+            tile_width = int(x_pixels.max() - x_pixels.min() + 1)
+            tile_height = int(y_pixels.max() - y_pixels.min() + 1)
+            density = pixel_count / max(1, tile_width * tile_height)
+            aspect_ratio = tile_height / max(1, tile_width)
+
+            if tile_height >= 18 and aspect_ratio >= 1.0 and density <= 0.35:
+                tile_matches += 1
+                tile_score += pixel_count * (tile_height / 20) * min(aspect_ratio, 8) * (
+                    1 - density
+                )
+
+    bolt_score = max(
+        raw_score / BOLT_SCORE_NORMALIZER,
+        tile_score / BOLT_TILE_SCORE_NORMALIZER,
+    )
+    bolt_pixel_ratio = float(np.mean(bolt_mask > 0))
+
+    return bolt_score, matching_components + tile_matches, bolt_pixel_ratio
+
+
 def calculate_region_activity(positive_diff, processed_frame, noise_floor):
     diff_mask = positive_diff >= noise_floor
     bright_mask = processed_frame >= BRIGHT_PIXEL_VALUE
@@ -192,9 +272,16 @@ def calculate_frame_metrics(processed_frame, previous_frame, baseline_noise):
     )
 
 
-def compute_lightning_score(current_metrics, previous_metrics, baseline_delta, baseline_peak_delta):
+def compute_lightning_score(
+    current_metrics,
+    previous_metrics,
+    baseline_delta,
+    baseline_peak_delta,
+    bolt_features=None,
+):
     mean_delta = max(0.0, current_metrics[0] - previous_metrics[0])
     peak_delta = max(0.0, current_metrics[1] - previous_metrics[1])
+    bolt_score, bolt_component_count, bolt_pixel_ratio = bolt_features or (0.0, 0, 0.0)
 
     mean_component = mean_delta / max(1.5, baseline_delta)
     peak_component = peak_delta / max(3.0, baseline_peak_delta)
@@ -207,6 +294,7 @@ def compute_lightning_score(current_metrics, previous_metrics, baseline_delta, b
         + current_metrics[3] * 18.0
         + current_metrics[4] * 32.0
         + current_metrics[5] * 10.0
+        + bolt_score
     )
 
     return FrameMetrics(
@@ -217,6 +305,9 @@ def compute_lightning_score(current_metrics, previous_metrics, baseline_delta, b
         region_diff_ratio=current_metrics[4],
         active_region_ratio=current_metrics[5],
         temporal_contrast=temporal_contrast,
+        bolt_score=bolt_score,
+        bolt_component_count=bolt_component_count,
+        bolt_pixel_ratio=bolt_pixel_ratio,
         score=score,
     )
 
@@ -229,14 +320,18 @@ def is_lightning_candidate(frame_metrics, previous_metrics, threshold):
         frame_metrics.region_diff_ratio >= MIN_REGION_DIFF_RATIO
         and frame_metrics.active_region_ratio >= 1 / (REGION_ROWS * REGION_COLS)
     )
-
-    return (
-        frame_metrics.score >= threshold
-        and mean_delta >= 3.0
+    static_bolt = (
+        frame_metrics.bolt_score >= max(BOLT_MIN_SCORE, threshold)
+        and frame_metrics.bolt_component_count > 0
+    )
+    temporal_flash = (
+        mean_delta >= 3.0
         and peak_delta >= 8.0
         and frame_metrics.temporal_contrast >= 1.2
         and (broad_flash or regional_flash)
     )
+
+    return frame_metrics.score >= threshold and (static_bolt or temporal_flash)
 
 
 def save_detected_frame(frame, output_path, video_name, frame_number, frame_metrics, threshold):
@@ -250,6 +345,7 @@ def save_detected_frame(frame, output_path, video_name, frame_number, frame_metr
             f"_diff_{frame_metrics.diff_ratio:.3f}"
             f"_region_{frame_metrics.region_diff_ratio:.3f}"
             f"_temp_{frame_metrics.temporal_contrast:.2f}"
+            f"_bolt_{frame_metrics.bolt_score:.2f}"
             f"_thr_{threshold:.2f}.jpg"
         ),
     )
@@ -282,6 +378,25 @@ def process_video(input_path, output_path, threshold, video_index, video_total):
     event_candidate = None
     event_gap = 0
     video_name = os.path.splitext(os.path.basename(input_path))[0]
+    first_metrics = calculate_frame_metrics(
+        previous_processed,
+        previous_processed,
+        baseline_noise,
+    )
+    first_frame_metrics = compute_lightning_score(
+        first_metrics,
+        previous_metrics,
+        baseline_delta,
+        baseline_peak_delta,
+        calculate_bolt_features(previous_frame),
+    )
+
+    if is_lightning_candidate(first_frame_metrics, previous_metrics, threshold):
+        event_candidate = {
+            "frame": previous_frame.copy(),
+            "frame_number": frame_count,
+            "metrics": first_frame_metrics,
+        }
 
     while running:
         ret, frame = cap.read()
@@ -300,6 +415,7 @@ def process_video(input_path, output_path, threshold, video_index, video_total):
             previous_metrics,
             baseline_delta,
             baseline_peak_delta,
+            calculate_bolt_features(frame),
         )
         detected = is_lightning_candidate(frame_metrics, previous_metrics, threshold)
 
