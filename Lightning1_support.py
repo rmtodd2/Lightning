@@ -22,6 +22,7 @@ REGION_ROWS = 6
 REGION_COLS = 8
 MIN_REGION_DIFF_RATIO = 0.025
 BOLT_SCORE_NORMALIZER = 120.0
+BOLT_TEXTURE_SCORE_NORMALIZER = 80.0
 BOLT_MIN_SCORE = 25.0
 
 running = False
@@ -39,6 +40,8 @@ class FrameMetrics:
     bolt_score: float
     bolt_component_count: int
     bolt_pixel_ratio: float
+    bolt_texture_score: float
+    bolt_texture_count: int
     score: float
 
 
@@ -164,6 +167,11 @@ def calculate_bolt_features(frame):
     bolt_mask = np.where((gray_frame >= 215) & (local_contrast >= 30), 255, 0).astype(
         np.uint8
     )
+    texture_mask = np.where(
+        (gray_frame >= 185) & (local_contrast >= 22),
+        255,
+        0,
+    ).astype(np.uint8)
 
     component_count, _, stats, _ = cv2.connectedComponentsWithStats(bolt_mask, 8)
     raw_score = 0.0
@@ -186,8 +194,41 @@ def calculate_bolt_features(frame):
 
     bolt_score = raw_score / BOLT_SCORE_NORMALIZER
     bolt_pixel_ratio = float(np.mean(bolt_mask > 0))
+    texture_score = 0.0
+    texture_matches = 0
 
-    return bolt_score, matching_components, bolt_pixel_ratio
+    for y_start in range(0, texture_mask.shape[0], 40):
+        for x_start in range(0, texture_mask.shape[1], 40):
+            tile = texture_mask[y_start : y_start + 80, x_start : x_start + 80]
+            if tile.size == 0:
+                continue
+
+            y_pixels, x_pixels = np.where(tile > 0)
+            pixel_count = len(x_pixels)
+            if pixel_count < 8:
+                continue
+
+            tile_width = int(x_pixels.max() - x_pixels.min() + 1)
+            tile_height = int(y_pixels.max() - y_pixels.min() + 1)
+            density = pixel_count / max(1, tile_width * tile_height)
+            aspect_ratio = tile_height / max(1, tile_width)
+
+            if tile_height >= 18 and aspect_ratio >= 1.0 and density <= 0.35:
+                texture_matches += 1
+                texture_score += pixel_count * (tile_height / 20) * min(
+                    aspect_ratio,
+                    8,
+                ) * (1 - density)
+
+    bolt_texture_score = texture_score / BOLT_TEXTURE_SCORE_NORMALIZER
+
+    return (
+        bolt_score,
+        matching_components,
+        bolt_pixel_ratio,
+        bolt_texture_score,
+        texture_matches,
+    )
 
 
 def calculate_region_activity(positive_diff, processed_frame, noise_floor):
@@ -249,7 +290,15 @@ def compute_lightning_score(
 ):
     mean_delta = max(0.0, current_metrics[0] - previous_metrics[0])
     peak_delta = max(0.0, current_metrics[1] - previous_metrics[1])
-    bolt_score, bolt_component_count, bolt_pixel_ratio = bolt_features or (0.0, 0, 0.0)
+    if bolt_features is None:
+        bolt_score, bolt_component_count, bolt_pixel_ratio = 0.0, 0, 0.0
+        bolt_texture_score, bolt_texture_count = 0.0, 0
+    else:
+        bolt_score, bolt_component_count, bolt_pixel_ratio = bolt_features[:3]
+        if len(bolt_features) >= 5:
+            bolt_texture_score, bolt_texture_count = bolt_features[3:5]
+        else:
+            bolt_texture_score, bolt_texture_count = 0.0, 0
 
     mean_component = mean_delta / max(1.5, baseline_delta)
     peak_component = peak_delta / max(3.0, baseline_peak_delta)
@@ -263,6 +312,7 @@ def compute_lightning_score(
         + current_metrics[4] * 32.0
         + current_metrics[5] * 10.0
         + bolt_score
+        + min(bolt_texture_score, 20.0)
     )
 
     return FrameMetrics(
@@ -276,6 +326,8 @@ def compute_lightning_score(
         bolt_score=bolt_score,
         bolt_component_count=bolt_component_count,
         bolt_pixel_ratio=bolt_pixel_ratio,
+        bolt_texture_score=bolt_texture_score,
+        bolt_texture_count=bolt_texture_count,
         score=score,
     )
 
@@ -289,11 +341,12 @@ def is_lightning_candidate(frame_metrics, previous_metrics, threshold):
         and frame_metrics.active_region_ratio >= 1 / (REGION_ROWS * REGION_COLS)
     )
     static_bolt = (
-        frame_metrics.bolt_score >= max(BOLT_MIN_SCORE, threshold)
+        frame_metrics.bolt_score >= BOLT_MIN_SCORE
         and frame_metrics.bolt_component_count > 0
     )
     bolt_with_motion = (
         frame_metrics.bolt_score >= 5.0
+        and frame_metrics.bolt_texture_score >= 35.0
         and regional_flash
         and frame_metrics.active_region_ratio >= 0.08
     )
@@ -304,8 +357,8 @@ def is_lightning_candidate(frame_metrics, previous_metrics, threshold):
         and (broad_flash or regional_flash)
     )
 
-    return frame_metrics.score >= threshold and (
-        static_bolt or bolt_with_motion or temporal_flash
+    return static_bolt or (
+        frame_metrics.score >= threshold and (bolt_with_motion or temporal_flash)
     )
 
 
@@ -321,6 +374,7 @@ def save_detected_frame(frame, output_path, video_name, frame_number, frame_metr
             f"_region_{frame_metrics.region_diff_ratio:.3f}"
             f"_temp_{frame_metrics.temporal_contrast:.2f}"
             f"_bolt_{frame_metrics.bolt_score:.2f}"
+            f"_texture_{frame_metrics.bolt_texture_score:.2f}"
             f"_thr_{threshold:.2f}.jpg"
         ),
     )
