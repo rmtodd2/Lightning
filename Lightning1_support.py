@@ -17,7 +17,6 @@ import Lightning1
 SUPPORTED_EXTENSIONS = {".mov", ".mp4", ".avi", ".m4v"}
 DEFAULT_THRESHOLD = 6.0
 BRIGHT_PIXEL_VALUE = 240
-EVENT_GAP_FRAMES = 2
 REGION_ROWS = 6
 REGION_COLS = 8
 MIN_REGION_DIFF_RATIO = 0.025
@@ -344,11 +343,22 @@ def is_lightning_candidate(frame_metrics, previous_metrics, threshold):
         frame_metrics.bolt_score >= BOLT_MIN_SCORE
         and frame_metrics.bolt_component_count > 0
     )
+    static_branching_bolt = (
+        frame_metrics.bolt_score >= 1.0
+        and frame_metrics.bolt_component_count > 0
+        and frame_metrics.bolt_texture_score >= 100.0
+    )
     bolt_with_motion = (
         frame_metrics.bolt_score >= 5.0
         and frame_metrics.bolt_texture_score >= 35.0
         and regional_flash
         and frame_metrics.active_region_ratio >= 0.08
+    )
+    branching_texture_with_motion = (
+        frame_metrics.bolt_texture_score >= 100.0
+        and frame_metrics.diff_ratio >= 0.005
+        and frame_metrics.region_diff_ratio >= 0.05
+        and frame_metrics.active_region_ratio >= 0.20
     )
     temporal_flash = (
         mean_delta >= 3.0
@@ -358,7 +368,13 @@ def is_lightning_candidate(frame_metrics, previous_metrics, threshold):
     )
 
     return static_bolt or (
-        frame_metrics.score >= threshold and (bolt_with_motion or temporal_flash)
+        frame_metrics.score >= threshold
+        and (
+            static_branching_bolt
+            or bolt_with_motion
+            or branching_texture_with_motion
+            or temporal_flash
+        )
     )
 
 
@@ -404,8 +420,6 @@ def process_video(input_path, output_path, threshold, video_index, video_total):
     baseline_peak_delta = 6.0
     frame_count = 0
     saved_count = 0
-    event_candidate = None
-    event_gap = 0
     video_name = os.path.splitext(os.path.basename(input_path))[0]
     first_metrics = calculate_frame_metrics(
         previous_processed,
@@ -421,11 +435,15 @@ def process_video(input_path, output_path, threshold, video_index, video_total):
     )
 
     if is_lightning_candidate(first_frame_metrics, previous_metrics, threshold):
-        event_candidate = {
-            "frame": previous_frame.copy(),
-            "frame_number": frame_count,
-            "metrics": first_frame_metrics,
-        }
+        save_detected_frame(
+            previous_frame,
+            output_path,
+            video_name,
+            frame_count,
+            first_frame_metrics,
+            threshold,
+        )
+        saved_count += 1
 
     while running:
         ret, frame = cap.read()
@@ -449,27 +467,15 @@ def process_video(input_path, output_path, threshold, video_index, video_total):
         detected = is_lightning_candidate(frame_metrics, previous_metrics, threshold)
 
         if detected:
-            if event_candidate is None or frame_metrics.score > event_candidate["metrics"].score:
-                event_candidate = {
-                    "frame": frame.copy(),
-                    "frame_number": frame_count,
-                    "metrics": frame_metrics,
-                }
-            event_gap = 0
-        elif event_candidate is not None:
-            event_gap += 1
-            if event_gap > EVENT_GAP_FRAMES:
-                save_detected_frame(
-                    event_candidate["frame"],
-                    output_path,
-                    video_name,
-                    event_candidate["frame_number"],
-                    event_candidate["metrics"],
-                    threshold,
-                )
-                saved_count += 1
-                event_candidate = None
-                event_gap = 0
+            save_detected_frame(
+                frame,
+                output_path,
+                video_name,
+                frame_count,
+                frame_metrics,
+                threshold,
+            )
+            saved_count += 1
 
         if not detected:
             mean_delta = abs(current_metrics[0] - previous_metrics[0])
@@ -485,17 +491,6 @@ def process_video(input_path, output_path, threshold, video_index, video_total):
         video_progress = video_index / video_total * 100
         _w1.set_counts(video_index, video_total, frame_count, frame_total)
         _w1.set_progress(video_progress, frame_progress)
-
-    if event_candidate is not None and running:
-        save_detected_frame(
-            event_candidate["frame"],
-            output_path,
-            video_name,
-            event_candidate["frame_number"],
-            event_candidate["metrics"],
-            threshold,
-        )
-        saved_count += 1
 
     cap.release()
     _w1.set_progress(video_index / video_total * 100, 100)

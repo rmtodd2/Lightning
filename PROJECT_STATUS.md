@@ -8,13 +8,13 @@ No user action required right now.
 
 ## Current Goal
 
-Improve accuracy after threshold changes still missed some lightning frames.
+Improve recall after the app found only one lightning frame from a video that contained multiple valid lightning frames.
 
 ---
 
 ## Current State
 
-Lightning is a PySide6 desktop app that scans supported video files in a selected folder and saves likely lightning frames as `.jpg` files. The detector now combines whole-frame brightness deltas, localized 6x8 region activity, temporal contrast, strict visible bolt-channel scoring, and softer texture-with-motion support for faint/branching bolts.
+Lightning is a PySide6 desktop app that scans supported video files in a selected folder and saves likely lightning frames as `.jpg` files. The detector now combines whole-frame brightness deltas, localized 6x8 region activity, temporal contrast, strict visible bolt-channel scoring, and softer texture-with-motion support for faint/branching bolts. It saves every detected lightning frame instead of collapsing nearby detections into one event frame.
 
 ---
 
@@ -27,6 +27,7 @@ Lightning is a PySide6 desktop app that scans supported video files in a selecte
 - Added static bolt-structure detection after real screenshot examples showed visible bolts with saturated peak brightness and weak temporal gates.
 - Tightened static bolt detection to require narrow high-contrast channel components, reducing false positives from bright cloud texture and rain shafts.
 - Split bolt scoring into strict channel evidence and softer texture evidence; texture evidence now requires motion/region support and cannot save a static cloud frame by itself.
+- Changed output behavior to save every detected lightning frame, because saving only the strongest frame per nearby event hid valid lightning frames from the same video.
 - Updated `README.md` and `requirements.txt`.
 
 ---
@@ -37,6 +38,7 @@ Lightning is a PySide6 desktop app that scans supported video files in a selecte
 - Keep the existing single threshold UI so the app stays simple.
 - Keep a built-in minimum static-bolt score and high-contrast channel gate so very low user thresholds do not turn bright cloud texture into detections.
 - Do not let high user thresholds block strong visible bolt-channel detections.
+- Prefer exhaustive frame extraction over one-frame-per-event grouping for now.
 - Preserve batch-folder processing and direct output into the selected output folder.
 
 ---
@@ -47,6 +49,7 @@ Lightning is a PySide6 desktop app that scans supported video files in a selecte
 - Threshold tuning may need real video samples because region and bolt scoring change score distribution.
 - Static bolt detection adds per-frame image analysis work and may be slower on long/high-resolution videos.
 - The single threshold still cannot explain all misses; a debug report with rejected-frame scores would make future tuning more reliable.
+- Saving every detected frame can create adjacent near-duplicates from the same flash.
 - The app does not yet create a CSV report, so reviewing large batches depends on output filenames.
 
 ---

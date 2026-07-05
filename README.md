@@ -12,7 +12,7 @@ The application scans each video in an input folder and looks for sudden flash e
 - temporal contrast against the recent frame-to-frame baseline
 - visible thin bolt structure inside a single frame
 
-Nearby detections are grouped into a single event, and the strongest frame from each event is saved as a `.jpg` in the selected output folder.
+Every detected lightning frame is saved as a `.jpg` in the selected output folder. This is intentionally more exhaustive, so a single flash may produce multiple adjacent saved frames if the lightning remains visible across frames.
 
 ## Features
 
@@ -23,6 +23,7 @@ Nearby detections are grouped into a single event, and the strongest frame from 
 - Region-based scoring for localized flashes
 - Temporal spike filtering to reduce false positives from gradual exposure changes
 - Static bolt-structure detection for visible lightning channels
+- Saves every detected lightning frame instead of only the strongest frame in an event
 - Progress indicators for videos and frames
 - Cancel button to stop processing
 
