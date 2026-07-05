@@ -21,9 +21,8 @@ EVENT_GAP_FRAMES = 2
 REGION_ROWS = 6
 REGION_COLS = 8
 MIN_REGION_DIFF_RATIO = 0.025
-BOLT_SCORE_NORMALIZER = 500.0
-BOLT_TILE_SCORE_NORMALIZER = 80.0
-BOLT_MIN_SCORE = 30.0
+BOLT_SCORE_NORMALIZER = 120.0
+BOLT_MIN_SCORE = 25.0
 
 running = False
 
@@ -162,12 +161,9 @@ def calculate_bolt_features(frame):
 
     local_average = cv2.GaussianBlur(gray_frame, (31, 31), 0)
     local_contrast = cv2.subtract(gray_frame, local_average)
-    bolt_mask = np.where((gray_frame >= 185) & (local_contrast >= 22), 255, 0).astype(
+    bolt_mask = np.where((gray_frame >= 215) & (local_contrast >= 30), 255, 0).astype(
         np.uint8
     )
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 3))
-    bolt_mask = cv2.morphologyEx(bolt_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
 
     component_count, _, stats, _ = cv2.connectedComponentsWithStats(bolt_mask, 8)
     raw_score = 0.0
@@ -176,50 +172,22 @@ def calculate_bolt_features(frame):
     for component_index in range(1, component_count):
         _, _, component_width, component_height, area = stats[component_index]
 
-        if area < 8 or area > 8000:
+        if area < 8 or area > 3000:
             continue
 
         aspect_ratio = component_height / max(1, component_width)
         fill_ratio = area / max(1, component_width * component_height)
 
-        if component_height >= 18 and aspect_ratio >= 1.2 and fill_ratio <= 0.45:
+        if component_height >= 24 and aspect_ratio >= 1.5 and fill_ratio <= 0.28:
             matching_components += 1
             raw_score += area * (component_height / 20) * min(aspect_ratio, 8) * (
                 1 - fill_ratio
             )
 
-    tile_score = 0.0
-    tile_matches = 0
-
-    for y_start in range(0, bolt_mask.shape[0], 40):
-        for x_start in range(0, bolt_mask.shape[1], 40):
-            tile = bolt_mask[y_start : y_start + 80, x_start : x_start + 80]
-            if tile.size == 0:
-                continue
-
-            y_pixels, x_pixels = np.where(tile > 0)
-            pixel_count = len(x_pixels)
-            if pixel_count < 8:
-                continue
-
-            tile_width = int(x_pixels.max() - x_pixels.min() + 1)
-            tile_height = int(y_pixels.max() - y_pixels.min() + 1)
-            density = pixel_count / max(1, tile_width * tile_height)
-            aspect_ratio = tile_height / max(1, tile_width)
-
-            if tile_height >= 18 and aspect_ratio >= 1.0 and density <= 0.35:
-                tile_matches += 1
-                tile_score += pixel_count * (tile_height / 20) * min(aspect_ratio, 8) * (
-                    1 - density
-                )
-
-    bolt_score = max(
-        raw_score / BOLT_SCORE_NORMALIZER,
-        tile_score / BOLT_TILE_SCORE_NORMALIZER,
-    )
+    bolt_score = raw_score / BOLT_SCORE_NORMALIZER
     bolt_pixel_ratio = float(np.mean(bolt_mask > 0))
 
-    return bolt_score, matching_components + tile_matches, bolt_pixel_ratio
+    return bolt_score, matching_components, bolt_pixel_ratio
 
 
 def calculate_region_activity(positive_diff, processed_frame, noise_floor):
@@ -324,6 +292,11 @@ def is_lightning_candidate(frame_metrics, previous_metrics, threshold):
         frame_metrics.bolt_score >= max(BOLT_MIN_SCORE, threshold)
         and frame_metrics.bolt_component_count > 0
     )
+    bolt_with_motion = (
+        frame_metrics.bolt_score >= 5.0
+        and regional_flash
+        and frame_metrics.active_region_ratio >= 0.08
+    )
     temporal_flash = (
         mean_delta >= 3.0
         and peak_delta >= 8.0
@@ -331,7 +304,9 @@ def is_lightning_candidate(frame_metrics, previous_metrics, threshold):
         and (broad_flash or regional_flash)
     )
 
-    return frame_metrics.score >= threshold and (static_bolt or temporal_flash)
+    return frame_metrics.score >= threshold and (
+        static_bolt or bolt_with_motion or temporal_flash
+    )
 
 
 def save_detected_frame(frame, output_path, video_name, frame_number, frame_metrics, threshold):

@@ -54,7 +54,7 @@ Then:
 3. Enter a lightning sensitivity threshold.
 4. Click `Start`.
 
-Lower threshold values catch more temporal flash events. `6.0` is a reasonable starting point for tuning. Visible bolt detection also has a built-in minimum shape score so cloud texture and bright gaps are less likely to trigger even when the threshold is very low.
+Lower threshold values catch more temporal flash events. `6.0` is a reasonable starting point for tuning. Visible bolt detection uses a stricter high-contrast channel score so cloud texture, rain shafts, and bright gaps are less likely to trigger even when the threshold is very low.
 
 ## Project Structure
 
@@ -66,6 +66,7 @@ Lower threshold values catch more temporal flash events. `6.0` is a reasonable s
 
 - Supported video extensions are matched case-insensitively, so `.MOV` files are included.
 - `.MOV` decoding depends on the codecs available through OpenCV/FFmpeg on your platform.
+- The threshold is a detector score, not a percentage. Very high values can miss real bolts; start near `6.0` and increase only if too many false positives are saved.
 - Frames are saved directly into the selected output folder; they are not grouped into per-video subfolders.
 - Output filenames include the frame number, detection score, region activity, temporal contrast, and brightness metadata for quick review.
 
