@@ -36,6 +36,14 @@ BACKGROUND_ALPHA = 0.02    # EMA update rate while no lightning is detected
 MAX_DETECTION_STREAK = 240 # resume background updates after this many
                            # consecutive detections (scene-change safety)
 
+# --- Camera-motion compensation ---------------------------------------------
+# Handheld footage drifts a few pixels per frame.  Without compensation the
+# background model misaligns and every dark edge (power lines, cloud edges)
+# leaves a thin bright novel strip behind - shaped exactly like a bolt.
+ALIGN_MIN_SHIFT = 0.15     # px at FLASH_WIDTH; smaller shifts are noise
+ALIGN_MAX_SHIFT = 8.0      # px at FLASH_WIDTH; larger means a mis-estimate
+ALIGN_MIN_RESPONSE = 0.25  # minimum phase-correlation peak confidence
+
 # --- Broad flash gates (measured against the background model) -------------
 BRIGHTEN_DELTA = 20.0      # gray levels above background = flash-lit pixel
 MIN_FLASH_MEAN_DELTA = 2.5 # minimum whole-frame mean rise over background
@@ -58,6 +66,16 @@ BOLT_MAX_CHANNEL_WIDTH = 12.0  # bolts are thin; wide bands are clouds/gaps
 BOLT_MIN_THINNESS = 6.0    # total channel length / channel width
 BOLT_RIDGE_MARGIN = 15.0   # channel must outshine its surroundings, so the
                            # bright edge strip of a wide band cannot qualify
+REVEALED_BG_GRAY = 140.0   # a component sitting where DARK content was in
+                           # the background is a revealed-scenery candidate
+                           # (camera tilt exposing sky at a treeline) ...
+BOLT_BRIGHT_RIDGE_MARGIN = 20.0  # ... and must then outshine even the bright
+                           # side of its ring.  Revealed sky never does; a
+                           # bolt against dark clouds or night sky always does
+BOLT_COUNTER_SHADOW_RATIO = 0.25  # a moving dark edge leaves a bright sliver
+                           # WITH a dark sliver right beside it; reject the
+                           # component when nearby darkening is this large a
+                           # share of its area (lightning darkens nothing)
 BOLT_STRONG_SCORE = 20.0   # structure alone is proof at or above this score
 BOLT_SUPPORT_SCORE = 6.0   # weaker structure still counts with flash support
 
@@ -96,6 +114,7 @@ class LightningDetector:
         self.recent_means = deque(maxlen=ONSET_WINDOW)
         self.in_flash = False
         self.detection_streak = 0
+        self._hann_window = None
 
     def process(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -108,6 +127,8 @@ class LightningDetector:
         if first_frame:
             self.flash_background = flash_gray.copy()
             self.bolt_background = bolt_gray.astype(np.float32)
+        else:
+            self._align_backgrounds(flash_gray)
 
         diff = flash_gray - self.flash_background
         mean_brightness = float(np.mean(flash_gray))
@@ -157,6 +178,43 @@ class LightningDetector:
             detected=detected,
         )
 
+    def _align_backgrounds(self, flash_gray):
+        """Shift the background models to track slow camera drift.
+
+        Phase correlation measures the global translation between the
+        current frame and the background.  It is robust to brightness
+        changes, so a lightning flash reads as ~zero shift and does not
+        corrupt the alignment.
+        """
+        if (self._hann_window is None
+                or self._hann_window.shape != flash_gray.shape):
+            self._hann_window = cv2.createHanningWindow(
+                flash_gray.shape[::-1], cv2.CV_32F
+            )
+        # phaseCorrelate applies the window to its inputs IN-PLACE, so it
+        # must get copies or it corrupts the background model and frame.
+        (dx, dy), response = cv2.phaseCorrelate(
+            self.flash_background.copy(), flash_gray.copy(), self._hann_window
+        )
+        magnitude = float(np.hypot(dx, dy))
+        if (response < ALIGN_MIN_RESPONSE
+                or not ALIGN_MIN_SHIFT <= magnitude <= ALIGN_MAX_SHIFT):
+            return
+
+        h, w = self.flash_background.shape
+        matrix = np.float32([[1, 0, dx], [0, 1, dy]])
+        self.flash_background = cv2.warpAffine(
+            self.flash_background, matrix, (w, h),
+            flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE,
+        )
+        bolt_h, bolt_w = self.bolt_background.shape
+        scale = bolt_w / w
+        matrix = np.float32([[1, 0, dx * scale], [0, 1, dy * scale]])
+        self.bolt_background = cv2.warpAffine(
+            self.bolt_background, matrix, (bolt_w, bolt_h),
+            flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE,
+        )
+
     def _decide(self, mean_brightness, flash_delta, flash_area_ratio,
                 darkened_area_ratio, bolt_score):
         score = (
@@ -166,7 +224,10 @@ class LightningDetector:
         )
 
         # A clearly-shaped novel bolt channel is proof by itself, and a high
-        # user threshold must not suppress it.
+        # user threshold must not suppress it.  (Camera-motion artifacts are
+        # rejected per component inside _score_bolt_structure, so no global
+        # motion gate is applied here - it would block real bolts filmed
+        # during a handheld pan.)
         strong_bolt = bolt_score >= BOLT_STRONG_SCORE
 
         # Weaker structure still counts when the sky brightened with it.
@@ -217,6 +278,7 @@ class LightningDetector:
             core_mask, 8
         )
         mask_bool = core_mask > 0
+        darkened = novelty <= -BOLT_NOVELTY_DELTA
         frame_h, frame_w = bolt_gray.shape
 
         total_score = 0.0
@@ -256,8 +318,8 @@ class LightningDetector:
             # brighter interior right next to it.  Compare the component's
             # novelty to the novelty of the surrounding ring (mask pixels
             # excluded so neighboring fragments do not skew the ring).
-            wx0, wy0 = max(0, x - 8), max(0, y - 8)
-            wx1, wy1 = min(frame_w, x + w + 8), min(frame_h, y + h + 8)
+            wx0, wy0 = max(0, x - 14), max(0, y - 14)
+            wx1, wy1 = min(frame_w, x + w + 14), min(frame_h, y + h + 14)
             window = (labels[wy0:wy1, wx0:wx1] == index)
             ring = cv2.dilate(
                 window.astype(np.uint8),
@@ -269,6 +331,37 @@ class LightningDetector:
                 float(np.mean(window_novelty[ring])) if ring.any() else 0.0
             )
             if component_novelty < ring_novelty + BOLT_RIDGE_MARGIN:
+                continue
+
+            # Revealed-scenery test: if the background under this component
+            # was dark, the "bolt" may just be sky exposed by camera tilt at
+            # a dark boundary (treeline, roofline).  Genuine bright-over-dark
+            # bolts (night sky, dark storm cloud) hugely outshine their
+            # surroundings; revealed sky is never brighter than the sky
+            # right beside it.
+            background_under = float(np.median(
+                self.bolt_background[wy0:wy1, wx0:wx1][window]
+            ))
+            if background_under < REVEALED_BG_GRAY:
+                window_gray = bolt_gray[wy0:wy1, wx0:wx1]
+                component_gray = float(np.percentile(window_gray[window], 90))
+                ring_gray = (
+                    float(np.percentile(window_gray[ring], 90))
+                    if ring.any() else 0.0
+                )
+                if component_gray < ring_gray + BOLT_BRIGHT_RIDGE_MARGIN:
+                    continue
+
+            # Counter-shadow test: residual camera motion that alignment
+            # could not remove (rotation, rolling shutter) makes a dark
+            # edge leave a bright sliver with a matching dark sliver right
+            # beside it.  Lightning darkens nothing near the channel.
+            reach = cv2.dilate(
+                window.astype(np.uint8),
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)),
+            ).astype(bool)
+            shadow = int(np.count_nonzero(darkened[wy0:wy1, wx0:wx1] & reach))
+            if shadow >= BOLT_COUNTER_SHADOW_RATIO * area:
                 continue
 
             matching_components += 1

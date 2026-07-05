@@ -2,13 +2,13 @@
 
 ## 🔴 User Action Required
 
-Run the app on real storm videos to confirm the new detector's accuracy on your footage. If anything is missed or falsely saved, the frame filename metrics (`flash`, `area`, `bolt`, `comps`) identify which detection path fired.
+Re-run the app on IMG_4818 (and other storm videos) to confirm the camera-motion fixes: the frame 42-47 style false positives should be gone while the real lightning frames are still saved.
 
 ---
 
 ## Current Goal
 
-Validate the rewritten detector on real slow-motion storm footage.
+Validate the motion-compensated detector on real handheld slow-motion storm footage.
 
 ---
 
@@ -25,6 +25,9 @@ The detection core was rewritten into `lightning_detector.py` around a slowly-ad
 
 ## Recently Completed
 
+- Fixed handheld-camera false positives (user's `Images/` folder, IMG_4818 frames 42-47): the camera pans ~6-8 px/frame there, and background misalignment made bright sky slivers along power lines and the treeline look like bolt channels. Fixes: (1) per-frame background alignment via phase correlation, (2) per-component counter-shadow test for moving dark edges, (3) revealed-scenery test for sky exposed at dark boundaries. Confirmed the real lightning frames (2397-2399) still detect and frames 42-47 stay quiet.
+- Found and worked around an OpenCV 5.0 bug/behavior: `cv2.phaseCorrelate` with a window argument mutates BOTH input arrays in-place - inputs must be copies.
+- Removed the global darkened-area gate from the bolt path (the per-component tests are more precise; the global gate blocked real bolts filmed during a pan).
 - Rewrote detection into `lightning_detector.py` (background model + bolt geometry + flash gates); `Lightning1_support.py` now only handles GUI wiring, validation, and I/O.
 - Validated against the three real captures in the repo: all detected strongly (bolt scores 26–64), including at threshold 25; patched bolt-free versions of the same frames stay quiet.
 - Built a synthetic test suite (16 scenarios): exposure ramps, camera bumps, brightening cloud patches, wide bright bands, static thin bright objects, night bolts, branched bolts, back-to-back flashes, saturated flashes — all pass.
@@ -41,7 +44,7 @@ The detection core was rewritten into `lightning_detector.py` around a slowly-ad
 - Never detect on frame 0 (it initializes the background model); the trade-off of missing a video that starts mid-strike was accepted to avoid saving static bright structures.
 - Strong bolt structure bypasses the user threshold; the threshold tunes broad-flash and faint-bolt sensitivity.
 - Keep the single-threshold UI, batch folder processing, exhaustive frame saving, and direct output into the selected folder.
-- Assume a mostly stationary camera; one-sided-brightening gate deliberately suppresses detection during camera motion.
+- Support handheld footage: compensate camera drift by aligning the background model with phase correlation, and reject residual motion artifacts per component (counter-shadow, revealed-scenery) instead of using a global motion gate, which would block real bolts filmed during a pan.
 
 ---
 

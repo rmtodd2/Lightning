@@ -7,6 +7,8 @@ In slow-motion footage a single flash persists across many consecutive frames, s
 - **Bolt structure**: thin, elongated, high-contrast bright channels, measured with orientation-independent geometry (rotated-rect extent, stroke width, thinness) so vertical, diagonal, and branched bolts all qualify. Every bolt pixel must also be *novel* — much brighter than the background model — which rejects static bright objects such as fence posts, antennas, building trim, and bright sky gaps between power lines. A ridge test rejects the bright edges of wide bands (rain shafts, cloud gaps), which are steps rather than thin channels.
 - **Broad flash**: a large share of the frame suddenly brightening well above the background. Entering a flash event requires a fast onset (a mean-brightness jump within a few frames), which gradual exposure changes never produce, and the brightening must not be matched by darkening (which would indicate camera motion instead of lightning).
 
+Handheld footage is supported: the background model tracks camera drift each frame using phase correlation, and two per-component tests reject the motion artifacts that remain — a *counter-shadow* test (a dark edge that moved leaves a bright sliver with a matching dark sliver beside it; lightning darkens nothing) and a *revealed-scenery* test (sky exposed by camera tilt at a treeline is never brighter than the sky beside it, while a bolt over dark background always is).
+
 Every detected lightning frame is saved as a `.jpg` in the selected output folder. This is intentionally exhaustive, so a single flash may produce multiple adjacent saved frames if the lightning remains visible across frames.
 
 ## Features
@@ -65,7 +67,7 @@ Lower threshold values catch more flash events. `6.0` is a reasonable starting p
 - Supported video extensions are matched case-insensitively, so `.MOV` files are included.
 - `.MOV` decoding depends on the codecs available through OpenCV/FFmpeg on your platform.
 - The threshold is a detector score, not a percentage. It mainly tunes broad-flash and faint-bolt sensitivity; strong visible bolt-channel detections are saved even when the threshold is set high.
-- The detector assumes a mostly stationary camera (tripod or braced). Deliberate panning suppresses the flash path by design, and heavy motion may reduce accuracy.
+- Handheld videos with slow pans and drift are handled by motion compensation; very fast whips or large rotations may still reduce accuracy while they last.
 - The very first frame of each video is used to initialize the background model and is never saved.
 - Frames are saved directly into the selected output folder; they are not grouped into per-video subfolders.
 - Output filenames include the frame number, total score, flash rise over background (`flash`), share of flash-lit pixels (`area`), bolt-structure score (`bolt`), and bolt component count (`comps`) for quick review.
