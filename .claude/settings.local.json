@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/home/bob/Documents/Claude/Lightning/.venv/bin/python *)",
+      "Bash(QT_QPA_PLATFORM=offscreen .venv/bin/python -c ' *)"
+    ]
+  }
+}

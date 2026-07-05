@@ -2,73 +2,73 @@
 
 ## 🔴 User Action Required
 
-No user action required right now.
+Run the app on real storm videos to confirm the new detector's accuracy on your footage. If anything is missed or falsely saved, the frame filename metrics (`flash`, `area`, `bolt`, `comps`) identify which detection path fired.
 
 ---
 
 ## Current Goal
 
-Improve recall after the app found only one lightning frame from a video that contained multiple valid lightning frames.
+Validate the rewritten detector on real slow-motion storm footage.
 
 ---
 
 ## Current State
 
-Lightning is a PySide6 desktop app that scans supported video files in a selected folder and saves likely lightning frames as `.jpg` files. The detector now combines whole-frame brightness deltas, localized 6x8 region activity, temporal contrast, strict visible bolt-channel scoring, and softer texture-with-motion support for faint/branching bolts. It saves every detected lightning frame instead of collapsing nearby detections into one event frame.
+Lightning is a PySide6 desktop app that scans supported video files in a selected folder and saves likely lightning frames as `.jpg` files.
+
+The detection core was rewritten into `lightning_detector.py` around a slowly-adapting background model (frozen while lightning is visible), replacing the previous stack of frame-to-frame and texture heuristics. Two evidence paths:
+
+- **Bolt structure**: thin/elongated/high-contrast bright channels with orientation-independent geometry (rotated-rect extent, distance-transform stroke width, thinness). Pixel-level novelty against the background model excludes static bright objects before component analysis, and a ridge test rejects bright edges of wide bands (rain shafts, cloud gaps, sky between power lines). Strong bolt structure is saved regardless of threshold.
+- **Broad flash**: large one-sided brightening over the background with a required sudden onset, so gradual exposure changes and camera bumps never fire.
 
 ---
 
 ## Recently Completed
 
-- Migrated the GUI from Tkinter to PySide6.
-- Confirmed supported video matching includes uppercase `.MOV` through case-insensitive extension checks.
-- Added region-based flash scoring.
-- Added temporal spike filtering to reduce gradual exposure-change false positives.
-- Added static bolt-structure detection after real screenshot examples showed visible bolts with saturated peak brightness and weak temporal gates.
-- Tightened static bolt detection to require narrow high-contrast channel components, reducing false positives from bright cloud texture and rain shafts.
-- Split bolt scoring into strict channel evidence and softer texture evidence; texture evidence now requires motion/region support and cannot save a static cloud frame by itself.
-- Changed output behavior to save every detected lightning frame, because saving only the strongest frame per nearby event hid valid lightning frames from the same video.
-- Updated `README.md` and `requirements.txt`.
+- Rewrote detection into `lightning_detector.py` (background model + bolt geometry + flash gates); `Lightning1_support.py` now only handles GUI wiring, validation, and I/O.
+- Validated against the three real captures in the repo: all detected strongly (bolt scores 26–64), including at threshold 25; patched bolt-free versions of the same frames stay quiet.
+- Built a synthetic test suite (16 scenarios): exposure ramps, camera bumps, brightening cloud patches, wide bright bands, static thin bright objects, night bolts, branched bolts, back-to-back flashes, saturated flashes — all pass.
+- End-to-end test through `process_video` on a synthetic MP4: 16/16 truth frames saved, zero false positives.
+- Throttled GUI progress updates to every 15 frames.
+- Performance: ~9 ms/frame at 1080p, ~16 ms at 4K.
 
 ---
 
 ## Decisions Made
 
-- Do not add sky cropping or masking at this stage.
-- Keep the existing single threshold UI so the app stays simple.
-- Keep a built-in minimum static-bolt score and high-contrast channel gate so very low user thresholds do not turn bright cloud texture into detections.
-- Do not let high user thresholds block strong visible bolt-channel detections.
-- Prefer exhaustive frame extraction over one-frame-per-event grouping for now.
-- Preserve batch-folder processing and direct output into the selected output folder.
+- Compare frames to a background model instead of the previous frame — in slow motion a flash persists across frames, so frame-to-frame differencing is structurally blind here.
+- Apply the novelty gate per pixel *before* connected components, so static bright structures can neither match nor merge with a real bolt component.
+- Never detect on frame 0 (it initializes the background model); the trade-off of missing a video that starts mid-strike was accepted to avoid saving static bright structures.
+- Strong bolt structure bypasses the user threshold; the threshold tunes broad-flash and faint-bolt sensitivity.
+- Keep the single-threshold UI, batch folder processing, exhaustive frame saving, and direct output into the selected folder.
+- Assume a mostly stationary camera; one-sided-brightening gate deliberately suppresses detection during camera motion.
 
 ---
 
 ## Known Issues / Risks
 
+- Constants were calibrated on three real frames plus synthetic scenes; real-video batches may still suggest tuning (all gates are named constants at the top of `lightning_detector.py`).
 - `.MOV` decoding still depends on the codecs available to OpenCV/FFmpeg on the user's machine.
-- Threshold tuning may need real video samples because region and bolt scoring change score distribution.
-- Static bolt detection adds per-frame image analysis work and may be slower on long/high-resolution videos.
-- The single threshold still cannot explain all misses; a debug report with rejected-frame scores would make future tuning more reliable.
 - Saving every detected frame can create adjacent near-duplicates from the same flash.
-- The app does not yet create a CSV report, so reviewing large batches depends on output filenames.
+- No CSV report yet; reviewing large batches depends on output filenames.
 
 ---
 
-## 🤖 Codex Next Steps
+## Next Steps
 
-- Add optional CSV detection reporting with video name, frame number, score, region activity, and temporal contrast.
-- Add optional per-video output subfolders.
-- Add a small automated test module for supported extension filtering and synthetic flash detection.
-- Add a lightweight debug report option that records rejected-frame max scores for threshold tuning.
-- Consider showing the active detector settings in an About or details dialog.
+- Test on real storm videos (user).
+- Optional CSV detection report (video, frame, score, path that fired).
+- Optional per-video output subfolders.
+- Consider a debug mode that logs near-miss frames (rejected but high score) for threshold tuning.
 
 ---
 
 ## Files / Areas To Know
 
 - `Lightning1.py`: PySide6 window and thread-safe UI signal bridge.
-- `Lightning1_support.py`: video filtering, validation, detector scoring, and frame saving.
-- `README.md`: user-facing setup, usage, notes, and suggested improvements.
+- `Lightning1_support.py`: GUI wiring, validation, video loop, frame saving.
+- `lightning_detector.py`: all detection logic and tunable constants.
+- `README.md`: user-facing setup, usage, notes.
 - `requirements.txt`: runtime Python dependencies.
 
 ---

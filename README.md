@@ -2,17 +2,12 @@
 
 Lightning is a small PySide6 desktop utility for extracting likely lightning frames from slow-motion video files.
 
-The application scans each video in an input folder and looks for sudden flash events between consecutive frames. Instead of using only absolute brightness, it scores each frame using:
+In slow-motion footage a single flash persists across many consecutive frames, so simple frame-to-frame differencing sees almost nothing. Instead, the detector maintains a slowly-adapting background model of the scene (frozen while lightning is visible) and looks for two kinds of evidence against it:
 
-- rapid increase in average brightness
-- rapid increase in peak brightness
-- ratio of pixels that brighten sharply from the previous frame
-- ratio of very bright pixels
-- strongest localized flash activity across a 6x8 region grid
-- temporal contrast against the recent frame-to-frame baseline
-- visible thin bolt structure inside a single frame
+- **Bolt structure**: thin, elongated, high-contrast bright channels, measured with orientation-independent geometry (rotated-rect extent, stroke width, thinness) so vertical, diagonal, and branched bolts all qualify. Every bolt pixel must also be *novel* — much brighter than the background model — which rejects static bright objects such as fence posts, antennas, building trim, and bright sky gaps between power lines. A ridge test rejects the bright edges of wide bands (rain shafts, cloud gaps), which are steps rather than thin channels.
+- **Broad flash**: a large share of the frame suddenly brightening well above the background. Entering a flash event requires a fast onset (a mean-brightness jump within a few frames), which gradual exposure changes never produce, and the brightening must not be matched by darkening (which would indicate camera motion instead of lightning).
 
-Every detected lightning frame is saved as a `.jpg` in the selected output folder. This is intentionally more exhaustive, so a single flash may produce multiple adjacent saved frames if the lightning remains visible across frames.
+Every detected lightning frame is saved as a `.jpg` in the selected output folder. This is intentionally exhaustive, so a single flash may produce multiple adjacent saved frames if the lightning remains visible across frames.
 
 ## Features
 
@@ -20,9 +15,10 @@ Every detected lightning frame is saved as a `.jpg` in the selected output folde
 - Batch processes videos from a selected folder
 - Supports `.MOV`, `.mov`, `.mp4`, `.avi`, and `.m4v` input files
 - Adjustable lightning sensitivity threshold
-- Region-based scoring for localized flashes
-- Temporal spike filtering to reduce false positives from gradual exposure changes
-- Static bolt-structure detection for visible lightning channels
+- Background-model detection built for slow-motion footage (a flash is compared to the pre-flash scene, not the previous frame)
+- Orientation-independent bolt-channel detection that handles vertical, diagonal, and branched bolts
+- Pixel-level novelty check so static bright objects can never register as bolts
+- Sudden-onset and one-sided-brightening gates that reject gradual exposure changes and camera bumps
 - Saves every detected lightning frame instead of only the strongest frame in an event
 - Progress indicators for videos and frames
 - Cancel button to stop processing
@@ -55,21 +51,24 @@ Then:
 3. Enter a lightning sensitivity threshold.
 4. Click `Start`.
 
-Lower threshold values catch more temporal flash events. `6.0` is a reasonable starting point for tuning. Visible bolt detection uses a stricter high-contrast channel score plus a softer texture-with-motion check, so faint/branching bolts can still be found while cloud texture, rain shafts, and bright gaps are less likely to trigger.
+Lower threshold values catch more flash events. `6.0` is a reasonable starting point. A clearly-shaped bolt channel is treated as proof by itself and is saved even when the threshold is set high; the threshold mainly tunes how much broad-flash and faint-bolt evidence is required.
 
 ## Project Structure
 
 - `Lightning1.py`: PySide6 GUI layout and startup entry point
 - `Lightning1_support.py`: application logic for folder selection, processing, and frame extraction
+- `lightning_detector.py`: the detection algorithm (background model, bolt geometry, flash gates)
 - `Lightning.ico`: application icon asset
 
 ## Notes
 
 - Supported video extensions are matched case-insensitively, so `.MOV` files are included.
 - `.MOV` decoding depends on the codecs available through OpenCV/FFmpeg on your platform.
-- The threshold is a detector score, not a percentage. It mainly tunes temporal and regional flash sensitivity; strong visible bolt-channel detections can still be saved even when the threshold is set high.
+- The threshold is a detector score, not a percentage. It mainly tunes broad-flash and faint-bolt sensitivity; strong visible bolt-channel detections are saved even when the threshold is set high.
+- The detector assumes a mostly stationary camera (tripod or braced). Deliberate panning suppresses the flash path by design, and heavy motion may reduce accuracy.
+- The very first frame of each video is used to initialize the background model and is never saved.
 - Frames are saved directly into the selected output folder; they are not grouped into per-video subfolders.
-- Output filenames include the frame number, detection score, region activity, temporal contrast, and brightness metadata for quick review.
+- Output filenames include the frame number, total score, flash rise over background (`flash`), share of flash-lit pixels (`area`), bolt-structure score (`bolt`), and bolt component count (`comps`) for quick review.
 
 ## Suggested Improvements
 

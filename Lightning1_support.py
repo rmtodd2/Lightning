@@ -5,43 +5,19 @@
 import os
 import sys
 import threading
-from dataclasses import dataclass
 
 import cv2
-import numpy as np
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 import Lightning1
+from lightning_detector import LightningDetector
 
 
 SUPPORTED_EXTENSIONS = {".mov", ".mp4", ".avi", ".m4v"}
 DEFAULT_THRESHOLD = 6.0
-BRIGHT_PIXEL_VALUE = 240
-REGION_ROWS = 6
-REGION_COLS = 8
-MIN_REGION_DIFF_RATIO = 0.025
-BOLT_SCORE_NORMALIZER = 120.0
-BOLT_TEXTURE_SCORE_NORMALIZER = 80.0
-BOLT_MIN_SCORE = 25.0
+UI_UPDATE_INTERVAL = 15  # frames between progress updates
 
 running = False
-
-
-@dataclass
-class FrameMetrics:
-    mean_brightness: float
-    peak_brightness: float
-    diff_ratio: float
-    bright_ratio: float
-    region_diff_ratio: float
-    active_region_ratio: float
-    temporal_contrast: float
-    bolt_score: float
-    bolt_component_count: int
-    bolt_pixel_ratio: float
-    bolt_texture_score: float
-    bolt_texture_count: int
-    score: float
 
 
 def main(*args):
@@ -68,14 +44,6 @@ def cancel():
     global running
     running = False
     _w1.set_status("Cancelling...")
-
-
-def quit(*args):
-    print("Lightning1_support.quit")
-    for arg in args:
-        print("another arg:", arg)
-    sys.stdout.flush()
-    sys.exit()
 
 
 def open_folder_i():
@@ -143,254 +111,16 @@ def validate_inputs():
     return input_folder_path, output_folder_path, threshold, video_files
 
 
-def preprocess_frame(frame):
-    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    small_frame = cv2.resize(gray_frame, (0, 0), fx=0.25, fy=0.25)
-    return cv2.GaussianBlur(small_frame, (5, 5), 0)
-
-
-def calculate_bolt_features(frame):
-    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    height, width = gray_frame.shape
-    scale = min(1.0, 960 / width)
-
-    if scale < 1.0:
-        gray_frame = cv2.resize(
-            gray_frame,
-            (int(width * scale), int(height * scale)),
-            interpolation=cv2.INTER_AREA,
-        )
-
-    local_average = cv2.GaussianBlur(gray_frame, (31, 31), 0)
-    local_contrast = cv2.subtract(gray_frame, local_average)
-    bolt_mask = np.where((gray_frame >= 215) & (local_contrast >= 30), 255, 0).astype(
-        np.uint8
-    )
-    texture_mask = np.where(
-        (gray_frame >= 185) & (local_contrast >= 22),
-        255,
-        0,
-    ).astype(np.uint8)
-
-    component_count, _, stats, _ = cv2.connectedComponentsWithStats(bolt_mask, 8)
-    raw_score = 0.0
-    matching_components = 0
-
-    for component_index in range(1, component_count):
-        _, _, component_width, component_height, area = stats[component_index]
-
-        if area < 8 or area > 3000:
-            continue
-
-        aspect_ratio = component_height / max(1, component_width)
-        fill_ratio = area / max(1, component_width * component_height)
-
-        if component_height >= 24 and aspect_ratio >= 1.5 and fill_ratio <= 0.28:
-            matching_components += 1
-            raw_score += area * (component_height / 20) * min(aspect_ratio, 8) * (
-                1 - fill_ratio
-            )
-
-    bolt_score = raw_score / BOLT_SCORE_NORMALIZER
-    bolt_pixel_ratio = float(np.mean(bolt_mask > 0))
-    texture_score = 0.0
-    texture_matches = 0
-
-    for y_start in range(0, texture_mask.shape[0], 40):
-        for x_start in range(0, texture_mask.shape[1], 40):
-            tile = texture_mask[y_start : y_start + 80, x_start : x_start + 80]
-            if tile.size == 0:
-                continue
-
-            y_pixels, x_pixels = np.where(tile > 0)
-            pixel_count = len(x_pixels)
-            if pixel_count < 8:
-                continue
-
-            tile_width = int(x_pixels.max() - x_pixels.min() + 1)
-            tile_height = int(y_pixels.max() - y_pixels.min() + 1)
-            density = pixel_count / max(1, tile_width * tile_height)
-            aspect_ratio = tile_height / max(1, tile_width)
-
-            if tile_height >= 18 and aspect_ratio >= 1.0 and density <= 0.35:
-                texture_matches += 1
-                texture_score += pixel_count * (tile_height / 20) * min(
-                    aspect_ratio,
-                    8,
-                ) * (1 - density)
-
-    bolt_texture_score = texture_score / BOLT_TEXTURE_SCORE_NORMALIZER
-
-    return (
-        bolt_score,
-        matching_components,
-        bolt_pixel_ratio,
-        bolt_texture_score,
-        texture_matches,
-    )
-
-
-def calculate_region_activity(positive_diff, processed_frame, noise_floor):
-    diff_mask = positive_diff >= noise_floor
-    bright_mask = processed_frame >= BRIGHT_PIXEL_VALUE
-    region_diff_ratios = []
-    active_regions = 0
-
-    for diff_region_rows, bright_region_rows in zip(
-        np.array_split(diff_mask, REGION_ROWS, axis=0),
-        np.array_split(bright_mask, REGION_ROWS, axis=0),
-    ):
-        for diff_region, bright_region in zip(
-            np.array_split(diff_region_rows, REGION_COLS, axis=1),
-            np.array_split(bright_region_rows, REGION_COLS, axis=1),
-        ):
-            diff_ratio = float(np.mean(diff_region))
-            bright_ratio = float(np.mean(bright_region))
-            region_diff_ratios.append(diff_ratio)
-            if diff_ratio >= MIN_REGION_DIFF_RATIO or bright_ratio >= 0.01:
-                active_regions += 1
-
-    strongest_region = max(region_diff_ratios, default=0.0)
-    active_region_ratio = active_regions / (REGION_ROWS * REGION_COLS)
-
-    return strongest_region, active_region_ratio
-
-
-def calculate_frame_metrics(processed_frame, previous_frame, baseline_noise):
-    mean_brightness = float(np.mean(processed_frame))
-    peak_brightness = float(np.percentile(processed_frame, 99.7))
-
-    positive_diff = cv2.subtract(processed_frame, previous_frame)
-    noise_floor = max(12.0, baseline_noise * 2.5)
-    diff_ratio = float(np.mean(positive_diff >= noise_floor))
-    bright_ratio = float(np.mean(processed_frame >= BRIGHT_PIXEL_VALUE))
-    region_diff_ratio, active_region_ratio = calculate_region_activity(
-        positive_diff,
-        processed_frame,
-        noise_floor,
-    )
-
-    return (
-        mean_brightness,
-        peak_brightness,
-        diff_ratio,
-        bright_ratio,
-        region_diff_ratio,
-        active_region_ratio,
-    )
-
-
-def compute_lightning_score(
-    current_metrics,
-    previous_metrics,
-    baseline_delta,
-    baseline_peak_delta,
-    bolt_features=None,
-):
-    mean_delta = max(0.0, current_metrics[0] - previous_metrics[0])
-    peak_delta = max(0.0, current_metrics[1] - previous_metrics[1])
-    if bolt_features is None:
-        bolt_score, bolt_component_count, bolt_pixel_ratio = 0.0, 0, 0.0
-        bolt_texture_score, bolt_texture_count = 0.0, 0
-    else:
-        bolt_score, bolt_component_count, bolt_pixel_ratio = bolt_features[:3]
-        if len(bolt_features) >= 5:
-            bolt_texture_score, bolt_texture_count = bolt_features[3:5]
-        else:
-            bolt_texture_score, bolt_texture_count = 0.0, 0
-
-    mean_component = mean_delta / max(1.5, baseline_delta)
-    peak_component = peak_delta / max(3.0, baseline_peak_delta)
-    temporal_contrast = mean_component * 0.65 + peak_component * 0.35
-
-    score = (
-        mean_component * 2.0
-        + peak_component * 1.4
-        + current_metrics[2] * 22.0
-        + current_metrics[3] * 18.0
-        + current_metrics[4] * 32.0
-        + current_metrics[5] * 10.0
-        + bolt_score
-        + min(bolt_texture_score, 20.0)
-    )
-
-    return FrameMetrics(
-        mean_brightness=current_metrics[0],
-        peak_brightness=current_metrics[1],
-        diff_ratio=current_metrics[2],
-        bright_ratio=current_metrics[3],
-        region_diff_ratio=current_metrics[4],
-        active_region_ratio=current_metrics[5],
-        temporal_contrast=temporal_contrast,
-        bolt_score=bolt_score,
-        bolt_component_count=bolt_component_count,
-        bolt_pixel_ratio=bolt_pixel_ratio,
-        bolt_texture_score=bolt_texture_score,
-        bolt_texture_count=bolt_texture_count,
-        score=score,
-    )
-
-
-def is_lightning_candidate(frame_metrics, previous_metrics, threshold):
-    mean_delta = frame_metrics.mean_brightness - previous_metrics[0]
-    peak_delta = frame_metrics.peak_brightness - previous_metrics[1]
-    broad_flash = frame_metrics.diff_ratio >= 0.01
-    regional_flash = (
-        frame_metrics.region_diff_ratio >= MIN_REGION_DIFF_RATIO
-        and frame_metrics.active_region_ratio >= 1 / (REGION_ROWS * REGION_COLS)
-    )
-    static_bolt = (
-        frame_metrics.bolt_score >= BOLT_MIN_SCORE
-        and frame_metrics.bolt_component_count > 0
-    )
-    static_branching_bolt = (
-        frame_metrics.bolt_score >= 1.0
-        and frame_metrics.bolt_component_count > 0
-        and frame_metrics.bolt_texture_score >= 100.0
-    )
-    bolt_with_motion = (
-        frame_metrics.bolt_score >= 5.0
-        and frame_metrics.bolt_texture_score >= 35.0
-        and regional_flash
-        and frame_metrics.active_region_ratio >= 0.08
-    )
-    branching_texture_with_motion = (
-        frame_metrics.bolt_texture_score >= 100.0
-        and frame_metrics.diff_ratio >= 0.005
-        and frame_metrics.region_diff_ratio >= 0.05
-        and frame_metrics.active_region_ratio >= 0.20
-    )
-    temporal_flash = (
-        mean_delta >= 3.0
-        and peak_delta >= 8.0
-        and frame_metrics.temporal_contrast >= 1.2
-        and (broad_flash or regional_flash)
-    )
-
-    return static_bolt or (
-        frame_metrics.score >= threshold
-        and (
-            static_branching_bolt
-            or bolt_with_motion
-            or branching_texture_with_motion
-            or temporal_flash
-        )
-    )
-
-
-def save_detected_frame(frame, output_path, video_name, frame_number, frame_metrics, threshold):
+def save_detected_frame(frame, output_path, video_name, frame_number, metrics, threshold):
     output_frame_path = os.path.join(
         output_path,
         (
             f"{video_name}_frame_{frame_number}"
-            f"_score_{frame_metrics.score:.2f}"
-            f"_mean_{frame_metrics.mean_brightness:.1f}"
-            f"_peak_{frame_metrics.peak_brightness:.1f}"
-            f"_diff_{frame_metrics.diff_ratio:.3f}"
-            f"_region_{frame_metrics.region_diff_ratio:.3f}"
-            f"_temp_{frame_metrics.temporal_contrast:.2f}"
-            f"_bolt_{frame_metrics.bolt_score:.2f}"
-            f"_texture_{frame_metrics.bolt_texture_score:.2f}"
+            f"_score_{metrics.score:.2f}"
+            f"_flash_{metrics.flash_delta:.1f}"
+            f"_area_{metrics.flash_area_ratio:.3f}"
+            f"_bolt_{metrics.bolt_score:.1f}"
+            f"_comps_{metrics.bolt_component_count}"
             f"_thr_{threshold:.2f}.jpg"
         ),
     )
@@ -405,94 +135,36 @@ def process_video(input_path, output_path, threshold, video_index, video_total):
     frame_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
     _w1.set_status(f"Processing {os.path.basename(input_path)}")
 
-    ret, previous_frame = cap.read()
-    if not ret:
-        cap.release()
-        return 0
-
-    previous_processed = preprocess_frame(previous_frame)
-    previous_metrics = (
-        float(np.mean(previous_processed)),
-        float(np.percentile(previous_processed, 99.7)),
-    )
-    baseline_noise = 5.0
-    baseline_delta = 3.0
-    baseline_peak_delta = 6.0
-    frame_count = 0
-    saved_count = 0
+    detector = LightningDetector(threshold)
     video_name = os.path.splitext(os.path.basename(input_path))[0]
-    first_metrics = calculate_frame_metrics(
-        previous_processed,
-        previous_processed,
-        baseline_noise,
-    )
-    first_frame_metrics = compute_lightning_score(
-        first_metrics,
-        previous_metrics,
-        baseline_delta,
-        baseline_peak_delta,
-        calculate_bolt_features(previous_frame),
-    )
-
-    if is_lightning_candidate(first_frame_metrics, previous_metrics, threshold):
-        save_detected_frame(
-            previous_frame,
-            output_path,
-            video_name,
-            frame_count,
-            first_frame_metrics,
-            threshold,
-        )
-        saved_count += 1
+    frame_number = 0
+    saved_count = 0
+    video_progress = (video_index - 1) / video_total * 100
 
     while running:
         ret, frame = cap.read()
         if not ret:
             break
 
-        frame_count += 1
-        processed_frame = preprocess_frame(frame)
-        current_metrics = calculate_frame_metrics(
-            processed_frame,
-            previous_processed,
-            baseline_noise,
-        )
-        frame_metrics = compute_lightning_score(
-            current_metrics,
-            previous_metrics,
-            baseline_delta,
-            baseline_peak_delta,
-            calculate_bolt_features(frame),
-        )
-        detected = is_lightning_candidate(frame_metrics, previous_metrics, threshold)
-
-        if detected:
+        metrics = detector.process(frame)
+        if metrics.detected:
             save_detected_frame(
                 frame,
                 output_path,
                 video_name,
-                frame_count,
-                frame_metrics,
+                frame_number,
+                metrics,
                 threshold,
             )
             saved_count += 1
 
-        if not detected:
-            mean_delta = abs(current_metrics[0] - previous_metrics[0])
-            peak_delta = abs(current_metrics[1] - previous_metrics[1])
-            baseline_delta = baseline_delta * 0.92 + max(0.5, mean_delta) * 0.08
-            baseline_peak_delta = baseline_peak_delta * 0.92 + max(1.0, peak_delta) * 0.08
-            baseline_noise = baseline_noise * 0.9 + float(np.std(processed_frame)) * 0.1
-
-        previous_processed = processed_frame
-        previous_metrics = (current_metrics[0], current_metrics[1])
-
-        frame_progress = frame_count / frame_total * 100
-        video_progress = video_index / video_total * 100
-        _w1.set_counts(video_index, video_total, frame_count, frame_total)
-        _w1.set_progress(video_progress, frame_progress)
+        frame_number += 1
+        if frame_number % UI_UPDATE_INTERVAL == 0:
+            _w1.set_counts(video_index, video_total, frame_number, frame_total)
+            _w1.set_progress(video_progress, frame_number / frame_total * 100)
 
     cap.release()
+    _w1.set_counts(video_index, video_total, frame_number, frame_total)
     _w1.set_progress(video_index / video_total * 100, 100)
     return saved_count
 
@@ -521,10 +193,10 @@ def start_processing(validated):
             )
 
         if running:
-            _w1.set_status(f"Done - saved {total_saved} events")
+            _w1.set_status(f"Done - saved {total_saved} frames")
             _w1.set_progress(100, 100)
         else:
-            _w1.set_status(f"Cancelled - saved {total_saved} events")
+            _w1.set_status(f"Cancelled - saved {total_saved} frames")
     finally:
         running = False
         _w1.set_controls_enabled(True)
