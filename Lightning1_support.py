@@ -10,11 +10,10 @@ import cv2
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 import Lightning1
-from lightning_detector import LightningDetector
+from lightning_detector import DEFAULT_THRESHOLD, LightningDetector
 
 
 SUPPORTED_EXTENSIONS = {".mov", ".mp4", ".avi", ".m4v"}
-DEFAULT_THRESHOLD = 6.0
 UI_UPDATE_INTERVAL = 15  # frames between progress updates
 
 running = False

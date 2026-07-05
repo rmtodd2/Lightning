@@ -36,6 +36,14 @@ BACKGROUND_ALPHA = 0.02    # EMA update rate while no lightning is detected
 MAX_DETECTION_STREAK = 240 # resume background updates after this many
                            # consecutive detections (scene-change safety)
 
+# --- User threshold -----------------------------------------------------
+# The GUI threshold field is a single sensitivity dial. BOLT_STRONG_SCORE and
+# BOLT_SUPPORT_SCORE below were calibrated at this reference value; _decide()
+# scales them by (self.threshold / DEFAULT_THRESHOLD) so moving the dial
+# actually changes what a "strong" or "supported" bolt requires instead of
+# only affecting the broad-flash path.
+DEFAULT_THRESHOLD = 6.0
+
 # --- Camera-motion compensation ---------------------------------------------
 # Handheld footage drifts a few pixels per frame.  Without compensation the
 # background model misaligns and every dark edge (power lines, cloud edges)
@@ -64,6 +72,23 @@ BOLT_MIN_AREA = 20         # ignore tiny specks outright
 BOLT_MIN_EXTENT = 40       # minimum rotated-rect length in pixels at 960w
 BOLT_MAX_CHANNEL_WIDTH = 12.0  # bolts are thin; wide bands are clouds/gaps
 BOLT_MIN_THINNESS = 6.0    # total channel length / channel width
+BOLT_MAX_STRAIGHT_SPAN_FRACTION = 0.5  # a component spanning at least this
+                           # much of the frame's larger dimension is checked
+                           # for straightness (see BOLT_MIN_WANDER); short
+                           # components are exempt since real short bolt
+                           # stubs can be nearly straight
+BOLT_MIN_WANDER = 2.0      # component bounding-box short side / channel
+                           # width. A misaligned straight scene edge (power
+                           # line, roofline, horizon) has a bounding box no
+                           # wider than its own stroke (wander ~= 0.4). Real
+                           # bolts visibly zigzag or branch over a long span,
+                           # so their bounding box is much wider than their
+                           # stroke (wander >= ~2.8 even for a gently curving
+                           # stroke). Only applied to long components (see
+                           # BOLT_MAX_STRAIGHT_SPAN_FRACTION) - this is what
+                           # rejects full-width power-line pan artifacts that
+                           # previously scored 80-140 and bypassed any
+                           # threshold via the strong-bolt path.
 BOLT_RIDGE_MARGIN = 15.0   # channel must outshine its surroundings, so the
                            # bright edge strip of a wide band cannot qualify
 REVEALED_BG_GRAY = 140.0   # a component sitting where DARK content was in
@@ -223,18 +248,20 @@ class LightningDetector:
             + bolt_score
         )
 
-        # A clearly-shaped novel bolt channel is proof by itself, and a high
-        # user threshold must not suppress it.  (Camera-motion artifacts are
-        # rejected per component inside _score_bolt_structure, so no global
-        # motion gate is applied here - it would block real bolts filmed
-        # during a handheld pan.)
-        strong_bolt = bolt_score >= BOLT_STRONG_SCORE
+        # A clearly-shaped novel bolt channel is proof by itself, needing
+        # less corroboration than a broad flash does. BOLT_STRONG_SCORE and
+        # BOLT_SUPPORT_SCORE were calibrated at DEFAULT_THRESHOLD, so scale
+        # them by the user's dial position - otherwise raising the threshold
+        # to reject false positives has no effect on this path at all, which
+        # is what made the threshold field look broken.
+        sensitivity = self.threshold / DEFAULT_THRESHOLD
+        strong_bolt = bolt_score >= BOLT_STRONG_SCORE * sensitivity
 
         # Weaker structure still counts when the sky brightened with it.
         supported_bolt = (
-            bolt_score >= BOLT_SUPPORT_SCORE
-            and flash_delta >= 1.0
-            and flash_area_ratio >= 0.01
+            bolt_score >= BOLT_SUPPORT_SCORE * sensitivity
+            and flash_delta >= 1.0 * sensitivity
+            and flash_area_ratio >= 0.01 * sensitivity
         )
 
         # Broad flash: sudden, one-sided brightening of a large area.
@@ -295,6 +322,7 @@ class LightningDetector:
             points = np.column_stack((xs, ys)).astype(np.float32)
             (_, _), (rect_w, rect_h), _ = cv2.minAreaRect(points)
             extent = max(rect_w, rect_h)
+            bounding_short_side = min(rect_w, rect_h)
             if extent < BOLT_MIN_EXTENT:
                 continue
 
@@ -311,6 +339,17 @@ class LightningDetector:
             if channel_width > BOLT_MAX_CHANNEL_WIDTH:
                 continue
             if thinness < BOLT_MIN_THINNESS:
+                continue
+
+            # Straightness test: a component that spans a large share of the
+            # frame AND whose bounding box is barely wider than its own
+            # stroke is a straight scene edge (power line, roofline, horizon)
+            # left behind by residual alignment error, not a bolt. Real
+            # bolts zigzag or branch over a long span, so their bounding box
+            # is much wider than their stroke width.
+            wander = bounding_short_side / channel_width
+            if (extent >= BOLT_MAX_STRAIGHT_SPAN_FRACTION * max(frame_w, frame_h)
+                    and wander < BOLT_MIN_WANDER):
                 continue
 
             # Ridge test: a bolt channel outshines BOTH of its sides, while
