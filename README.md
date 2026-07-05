@@ -8,6 +8,8 @@ The application scans each video in an input folder and looks for sudden flash e
 - rapid increase in peak brightness
 - ratio of pixels that brighten sharply from the previous frame
 - ratio of very bright pixels
+- strongest localized flash activity across a 6x8 region grid
+- temporal contrast against the recent frame-to-frame baseline
 
 Nearby detections are grouped into a single event, and the strongest frame from each event is saved as a `.jpg` in the selected output folder.
 
@@ -17,6 +19,8 @@ Nearby detections are grouped into a single event, and the strongest frame from 
 - Batch processes videos from a selected folder
 - Supports `.MOV`, `.mov`, `.mp4`, `.avi`, and `.m4v` input files
 - Adjustable lightning sensitivity threshold
+- Region-based scoring for localized flashes
+- Temporal spike filtering to reduce false positives from gradual exposure changes
 - Progress indicators for videos and frames
 - Cancel button to stop processing
 
@@ -61,7 +65,7 @@ Lower threshold values catch more flashes. `6.0` is a reasonable starting point 
 - Supported video extensions are matched case-insensitively, so `.MOV` files are included.
 - `.MOV` decoding depends on the codecs available through OpenCV/FFmpeg on your platform.
 - Frames are saved directly into the selected output folder; they are not grouped into per-video subfolders.
-- Output filenames include the frame number and detection score metadata for quick review.
+- Output filenames include the frame number, detection score, region activity, temporal contrast, and brightness metadata for quick review.
 
 ## Suggested Improvements
 
@@ -69,3 +73,4 @@ Lower threshold values catch more flashes. `6.0` is a reasonable starting point 
 - Add optional per-video output subfolders to keep large batches easier to review.
 - Save a CSV detection report with video name, frame number, score, and brightness metrics.
 - Add a recursive input-folder option for cameras that create dated subfolders.
+- Add a small sample-video test set for tuning thresholds across different cameras.
